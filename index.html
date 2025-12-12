@@ -3,15 +3,15 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Local Charity Directory</title>
+  <title>Ohio Charity Directory</title>
 
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
   <style>
-    body{font-family:system-ui,Arial;max-width:780px;margin:18px auto;padding:0 14px;color:#000;background:#fff}
-    h1{font-size:20px;margin:0 0 6px}
-    .muted{color:#555;font-size:13px;margin:6px 0 12px}
-    .bar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:10px 0}
-    .btn{display:inline-block;padding:8px 12px;border:1px solid #000;border-radius:8px;text-decoration:none;color:#000;background:#fff}
+    body{font-family:system-ui,Arial;max-width:820px;margin:18px auto;padding:0 14px;color:#000;background:#fff}
+    h1{font-size:20px;margin:0 0 6px;text-align:center}
+    .muted{color:#555;font-size:13px;margin:6px 0 12px;text-align:center}
+    .bar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;justify-content:center;margin:10px 0}
+    .btn{display:inline-block;padding:8px 12px;border:1px solid #000;border-radius:8px;text-decoration:none;color:#000;background:#fff;cursor:pointer}
     .chip{padding:6px 10px;border:1px solid #000;border-radius:999px;font-size:12px}
     .card{border:1px solid #000;border-radius:10px;padding:12px;margin:10px 0}
     .name{font-weight:700;font-size:16px}
@@ -19,7 +19,14 @@
     #mapWrap{display:none;margin-top:10px}
     #map{height:360px;border:1px solid #000;border-radius:10px}
     .row{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
-    input{padding:8px 10px;border:1px solid #ccc;border-radius:8px;min-width:220px}
+    input{padding:8px 10px;border:1px solid #ccc;border-radius:8px;min-width:240px}
+    select{padding:8px 10px;border:1px solid #ccc;border-radius:8px;background:#fff}
+    .badges{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+    .badge{border:1px solid #000;border-radius:999px;padding:4px 8px;font-size:12px}
+    .badge.soft{border-color:#555;color:#555}
+    .badge.note{font-style:italic}
+    #list{margin-top:10px}
+    #debug{display:none}
   </style>
 </head>
 <body>
@@ -28,6 +35,7 @@
     Showing vetted charities. QR filters: <span class="chip">?cause=animals</span> <span class="chip">?city=columbus</span> <span class="chip">?wallet=applepay</span>
   </div>
 
+  <!-- Search + primary actions -->
   <div class="bar">
     <input id="search" placeholder="Search (name, city)…" />
     <button class="btn" id="applyBtn">Apply</button>
@@ -35,6 +43,27 @@
     <span class="chip" id="activeFilters"></span>
   </div>
 
+  <!-- User-adjustable filters -->
+  <div class="bar" id="filterBar">
+    <select id="causeSelect">
+      <option value="">All causes</option>
+      <option value="animals">Animals</option>
+    </select>
+
+    <select id="citySelect">
+      <option value="">All cities</option>
+      <!-- cities will be populated dynamically; this is just the default -->
+    </select>
+
+    <label class="chip" style="display:flex;align-items:center;gap:6px;">
+      <input type="checkbox" id="applePayOnly">
+      Apple Pay only
+    </label>
+
+    <button class="btn" id="clearFiltersBtn">Clear filters</button>
+  </div>
+
+  <div id="debug" class="card"></div>
   <div id="list"></div>
 
   <div id="mapWrap">
@@ -45,9 +74,9 @@
 <script type="module">
   import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js/+esm';
 
-  // ✅ Replace these:
-  const SUPABASE_URL = 'https://fqlqqgjblnksfluzhnpf.supabase.co';
-  const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZxbHFxZ2pibG5rc2ZsdXpobnBmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTQ4NTQzMjEsImV4cCI6MjA3MDQzMDMyMX0.EKBrkuxyNWGWmSL8f9nVFKrjR5XNMrYyfwJmaGrM8IE';
+  // ✅ Replace these with your Supabase project details:
+  const SUPABASE_URL = 'https://SUPABASE_URL';
+  const SUPABASE_ANON_KEY = 'SUPABASE_ANON_KEY';
 
   const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
@@ -58,6 +87,7 @@
   const $mapWrap = document.getElementById('mapWrap');
   const $toggleMapBtn = document.getElementById('toggleMapBtn');
   const $mapStatus = document.getElementById('mapStatus');
+  const $debug = document.getElementById('debug');
 
   function escapeHtml(s='') {
     return String(s)
@@ -68,13 +98,34 @@
       .replaceAll("'","&#039;");
   }
 
-  function getFilters() {
+  function normalizeCity(s='') { return String(s).trim(); }
+
+  // ---------- Filters (URL defaults + UI overrides) ----------
+  function getFiltersFromUrl() {
     return {
-      cause: params.get('cause')?.toLowerCase() || null,
-      city: params.get('city')?.toLowerCase() || null,
-      wallet: params.get('wallet')?.toLowerCase() || null,
-      q: params.get('q') || null,
+      cause: params.get('cause')?.toLowerCase() || '',
+      city: params.get('city') || '',
+      wallet: params.get('wallet')?.toLowerCase() || '',
+      q: params.get('q') || ''
     };
+  }
+
+  function getFiltersFromUI() {
+    const cause = document.getElementById('causeSelect').value || '';
+    const city = document.getElementById('citySelect').value || '';
+    const wallet = document.getElementById('applePayOnly').checked ? 'applepay' : '';
+    const q = document.getElementById('search').value.trim() || '';
+    return { cause, city, wallet, q };
+  }
+
+  function applyFiltersToUrl(f) {
+    if (f.cause) params.set('cause', f.cause); else params.delete('cause');
+    if (f.city) params.set('city', f.city); else params.delete('city');
+    if (f.wallet) params.set('wallet', f.wallet); else params.delete('wallet');
+    if (f.q) params.set('q', f.q); else params.delete('q');
+
+    const newUrl = `${window.location.pathname}${params.toString() ? '?' + params.toString() : ''}`;
+    window.history.replaceState({}, '', newUrl);
   }
 
   function setFilterBadge(f) {
@@ -86,17 +137,31 @@
     $filters.textContent = bits.length ? `Filters: ${bits.join(' • ')}` : 'No filters';
   }
 
+  function initFilterUIFromUrl() {
+    const f = getFiltersFromUrl();
+    document.getElementById('search').value = f.q || '';
+    if (f.cause) document.getElementById('causeSelect').value = f.cause;
+    document.getElementById('applePayOnly').checked = (f.wallet === 'applepay');
+    // city will be set after city dropdown is populated
+  }
+
+  // ---------- Rendering ----------
   function charityCard(c) {
     const city = c.city ? `${c.city}, ${c.state || 'OH'}` : '';
     const tags = Array.isArray(c.cause_tags) ? c.cause_tags.join(', ') : '';
-    const applePay = c.apple_pay_supported ? 'Apple Pay verified' : 'Apple Pay not verified';
     const donateLabel = 'Donate on official site';
+
+    // Educational badges
+    const badges = [];
+    if (c.apple_pay_supported) badges.push(`<span class="badge">Supports Apple Pay</span>`);
+    badges.push(`<span class="badge">Supports Credit/Debit</span>`);
+    badges.push(`<span class="badge soft note">Direct Donate: coming soon</span>`);
 
     return `
       <div class="card">
         <div class="name">${escapeHtml(c.name)}</div>
         <div class="meta">${escapeHtml(city)}${city && tags ? ' • ' : ''}${escapeHtml(tags)}</div>
-        <div class="meta">${escapeHtml(applePay)}</div>
+        ${badges.length ? `<div class="badges">${badges.join('')}</div>` : ''}
         <div class="row">
           <a class="btn" href="${escapeHtml(c.donate_url)}" target="_blank" rel="noopener">💚 ${donateLabel}</a>
           ${c.website_url ? `<a class="btn" href="${escapeHtml(c.website_url)}" target="_blank" rel="noopener">Website</a>` : ''}
@@ -105,9 +170,53 @@
     `;
   }
 
+  // ---------- Data loading ----------
+  async function loadCitiesForDropdown() {
+    // Pull vetted Ohio charities and build a distinct city list client-side (simple + reliable)
+    const { data, error } = await supabase
+      .from('charities')
+      .select('city')
+      .eq('vetted_status', 'vetted')
+      .eq('is_ohio_based', true);
+
+    if (error) {
+      console.error('city load error', error);
+      return;
+    }
+
+    const cities = Array.from(new Set((data || [])
+      .map(r => normalizeCity(r.city || ''))
+      .filter(Boolean)))
+      .sort((a,b) => a.localeCompare(b));
+
+    const citySelect = document.getElementById('citySelect');
+    // reset options (keep "All cities")
+    citySelect.innerHTML = '<option value="">All cities</option>';
+    for (const city of cities) {
+      const opt = document.createElement('option');
+      opt.value = city;
+      opt.textContent = city;
+      citySelect.appendChild(opt);
+    }
+
+    // apply URL default city after options exist
+    const f = getFiltersFromUrl();
+    if (f.city) {
+      // allow either "columbus" or "Columbus"
+      const match = cities.find(c => c.toLowerCase() === f.city.toLowerCase());
+      if (match) citySelect.value = match;
+      else citySelect.value = f.city;
+    }
+  }
+
   async function loadCharities() {
-    const f = getFilters();
+    const f = getFiltersFromUI();
+    applyFiltersToUrl(f);
     setFilterBadge(f);
+
+    // Helpful debug if something goes wrong
+    $debug.style.display = 'none';
+    $debug.textContent = '';
 
     let q = supabase
       .from('charities')
@@ -115,18 +224,23 @@
       .eq('vetted_status', 'vetted')
       .eq('is_ohio_based', true);
 
-    if (f.cause) q = q.contains('cause_tags', [f.cause]);
+    if (f.cause) q = q.contains('cause_tags', [f.cause.toLowerCase()]);
     if (f.city) q = q.ilike('city', `%${f.city}%`);
     if (f.wallet === 'applepay') q = q.eq('apple_pay_supported', true);
 
     const { data, error } = await q.order('name', { ascending: true });
+
     if (error) {
-      $list.innerHTML = `<div class="card">Error loading charities: ${escapeHtml(error.message)}</div>`;
+      $debug.style.display = 'block';
+      $debug.textContent = 'Supabase error: ' + error.message;
+      $list.innerHTML = '';
       return [];
     }
 
     let results = data || [];
-    const queryText = (f.q || $search.value || '').trim().toLowerCase();
+
+    // Search across name/city (client-side)
+    const queryText = (f.q || '').trim().toLowerCase();
     if (queryText) {
       results = results.filter(x =>
         (x.name || '').toLowerCase().includes(queryText) ||
@@ -136,16 +250,12 @@
 
     $list.innerHTML = results.length
       ? results.map(charityCard).join('')
-      : `<div class="card">No vetted charities match these filters yet.</div>`;
+      : `<div class="card">No charities match these filters.</div>`;
 
     return results;
   }
 
-  // -------------------------
-  // Browser geocoding (Nominatim)
-  // -------------------------
-
-  // Cache geocode results locally so we don't repeatedly hit the API
+  // ---------- Browser geocoding (Nominatim) ----------
   const GEO_CACHE_KEY = 'geo_cache_v1';
 
   function loadGeoCache() {
@@ -169,36 +279,23 @@
       .join(', ');
   }
 
-  // Throttle: 1 request per second to be polite and avoid rate limits
   const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
   async function geocodeNominatim(address) {
     const q = encodeURIComponent(address);
     const url = `https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${q}`;
-
-    const res = await fetch(url, {
-      headers: {
-        "Accept": "application/json"
-        // Nominatim prefers a descriptive User-Agent header.
-        // Browsers restrict setting User-Agent; that's ok for MVP.
-      }
-    });
-
+    const res = await fetch(url, { headers: { "Accept": "application/json" } });
     if (!res.ok) return null;
     const data = await res.json();
     if (!data?.length) return null;
-
     return { lat: Number(data[0].lat), lng: Number(data[0].lon) };
   }
 
-  // -------------------------
-  // Map toggle and plotting
-  // -------------------------
+  // ---------- Map ----------
   let map, markersLayer, L;
 
   async function ensureMap() {
     if (map) return;
-
     L = await import('https://unpkg.com/leaflet@1.9.4/dist/leaflet-src.esm.js');
     map = L.map('map');
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -221,11 +318,11 @@
 
     const geoCache = loadGeoCache();
     let plotted = 0;
-    let attempted = 0;
+    let geocoded = 0;
 
     $mapStatus.textContent = 'Plotting charities…';
 
-    // First pass: plot any that already have lat/lng
+    // Plot those with saved coords
     for (const c of charities) {
       if (c.lat && c.lng) {
         addMarker(c, Number(c.lat), Number(c.lng));
@@ -233,55 +330,60 @@
       }
     }
 
-    // Second pass: geocode those missing coords but having an address
+    // Geocode those missing coords but having address1
     for (const c of charities) {
       if (c.lat && c.lng) continue;
+      if (!c.address1) continue;
 
-      const address = buildAddressQuery(c);
-      if (!address || !c.address1) continue; // require at least address1 to geocode
-
-      attempted++;
       const key = addrKey(c);
-
-      // cached?
       if (geoCache[key]) {
         addMarker(c, geoCache[key].lat, geoCache[key].lng);
         plotted++;
         continue;
       }
 
-      // throttle
-      await sleep(1000);
+      const address = buildAddressQuery(c);
+      if (!address) continue;
 
+      // throttle: 1 req/sec
+      await sleep(1000);
       const geo = await geocodeNominatim(address);
       if (geo) {
         geoCache[key] = geo;
         saveGeoCache(geoCache);
         addMarker(c, geo.lat, geo.lng);
         plotted++;
+        geocoded++;
       }
     }
 
-    // Fit bounds if we have any markers
-    const allMarkers = [];
+    // Fit bounds
+    const points = [];
     markersLayer.eachLayer(layer => {
-      if (layer.getLatLng) allMarkers.push(layer.getLatLng());
+      if (layer.getLatLng) points.push(layer.getLatLng());
     });
 
-    if (allMarkers.length) {
-      const bounds = L.latLngBounds(allMarkers);
-      map.fitBounds(bounds, { padding: [20, 20] });
-      $mapStatus.textContent = `Map ready: plotted ${plotted} location(s).`;
+    if (points.length) {
+      map.fitBounds(L.latLngBounds(points), { padding: [20, 20] });
+      $mapStatus.textContent = `Map ready: plotted ${plotted} location(s) (${geocoded} geocoded this session).`;
     } else {
-      $mapStatus.textContent = `No locations available yet. Add addresses (address1/city/zip) or lat/lng.`;
+      $mapStatus.textContent = 'No locations to plot yet. Add address1/city/zip for each charity.';
     }
   }
 
-  // UI actions
-  document.getElementById('applyBtn').addEventListener('click', () => {
-    const v = $search.value.trim();
-    if (v) params.set('q', v); else params.delete('q');
-    window.location.search = params.toString();
+  // ---------- Events ----------
+  document.getElementById('causeSelect').addEventListener('change', loadCharities);
+  document.getElementById('citySelect').addEventListener('change', loadCharities);
+  document.getElementById('applePayOnly').addEventListener('change', loadCharities);
+
+  document.getElementById('applyBtn').addEventListener('click', loadCharities);
+
+  document.getElementById('clearFiltersBtn').addEventListener('click', () => {
+    document.getElementById('search').value = '';
+    document.getElementById('causeSelect').value = '';
+    document.getElementById('citySelect').value = '';
+    document.getElementById('applePayOnly').checked = false;
+    loadCharities();
   });
 
   $toggleMapBtn.addEventListener('click', async () => {
@@ -297,12 +399,10 @@
     }
   });
 
-  // Pre-fill search from URL
-  const initial = params.get('q');
-  if (initial) $search.value = initial;
-
-  // Initial list load (mobile-friendly default)
-  loadCharities();
+  // ---------- Boot ----------
+  initFilterUIFromUrl();
+  await loadCitiesForDropdown();
+  await loadCharities();
 </script>
 </body>
 </html>
