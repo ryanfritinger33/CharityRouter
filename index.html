@@ -1,0 +1,308 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Local Charity Directory</title>
+
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <style>
+    body{font-family:system-ui,Arial;max-width:780px;margin:18px auto;padding:0 14px;color:#000;background:#fff}
+    h1{font-size:20px;margin:0 0 6px}
+    .muted{color:#555;font-size:13px;margin:6px 0 12px}
+    .bar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:10px 0}
+    .btn{display:inline-block;padding:8px 12px;border:1px solid #000;border-radius:8px;text-decoration:none;color:#000;background:#fff}
+    .chip{padding:6px 10px;border:1px solid #000;border-radius:999px;font-size:12px}
+    .card{border:1px solid #000;border-radius:10px;padding:12px;margin:10px 0}
+    .name{font-weight:700;font-size:16px}
+    .meta{font-size:12px;color:#555;margin-top:4px}
+    #mapWrap{display:none;margin-top:10px}
+    #map{height:360px;border:1px solid #000;border-radius:10px}
+    .row{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+    input{padding:8px 10px;border:1px solid #ccc;border-radius:8px;min-width:220px}
+  </style>
+</head>
+<body>
+  <h1>Ohio Charity Directory</h1>
+  <div class="muted" id="subtitle">
+    Showing vetted charities. QR filters: <span class="chip">?cause=animals</span> <span class="chip">?city=columbus</span> <span class="chip">?wallet=applepay</span>
+  </div>
+
+  <div class="bar">
+    <input id="search" placeholder="Search (name, city)…" />
+    <button class="btn" id="applyBtn">Apply</button>
+    <button class="btn" id="toggleMapBtn">Show on map</button>
+    <span class="chip" id="activeFilters"></span>
+  </div>
+
+  <div id="list"></div>
+
+  <div id="mapWrap">
+    <div id="map"></div>
+    <div class="muted" id="mapStatus">Loading map…</div>
+  </div>
+
+<script type="module">
+  import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js/+esm';
+
+  // ✅ Replace these:
+  const SUPABASE_URL = 'https://SUPABASE_URL';
+  const SUPABASE_ANON_KEY = 'SUPABASE_ANON_KEY';
+
+  const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+  const params = new URLSearchParams(window.location.search);
+  const $list = document.getElementById('list');
+  const $filters = document.getElementById('activeFilters');
+  const $search = document.getElementById('search');
+  const $mapWrap = document.getElementById('mapWrap');
+  const $toggleMapBtn = document.getElementById('toggleMapBtn');
+  const $mapStatus = document.getElementById('mapStatus');
+
+  function escapeHtml(s='') {
+    return String(s)
+      .replaceAll('&','&amp;')
+      .replaceAll('<','&lt;')
+      .replaceAll('>','&gt;')
+      .replaceAll('"','&quot;')
+      .replaceAll("'","&#039;");
+  }
+
+  function getFilters() {
+    return {
+      cause: params.get('cause')?.toLowerCase() || null,
+      city: params.get('city')?.toLowerCase() || null,
+      wallet: params.get('wallet')?.toLowerCase() || null,
+      q: params.get('q') || null,
+    };
+  }
+
+  function setFilterBadge(f) {
+    const bits = [];
+    if (f.cause) bits.push(`cause=${f.cause}`);
+    if (f.city) bits.push(`city=${f.city}`);
+    if (f.wallet) bits.push(`wallet=${f.wallet}`);
+    if (f.q) bits.push(`q=${f.q}`);
+    $filters.textContent = bits.length ? `Filters: ${bits.join(' • ')}` : 'No filters';
+  }
+
+  function charityCard(c) {
+    const city = c.city ? `${c.city}, ${c.state || 'OH'}` : '';
+    const tags = Array.isArray(c.cause_tags) ? c.cause_tags.join(', ') : '';
+    const applePay = c.apple_pay_supported ? 'Apple Pay verified' : 'Apple Pay not verified';
+    const donateLabel = 'Donate on official site';
+
+    return `
+      <div class="card">
+        <div class="name">${escapeHtml(c.name)}</div>
+        <div class="meta">${escapeHtml(city)}${city && tags ? ' • ' : ''}${escapeHtml(tags)}</div>
+        <div class="meta">${escapeHtml(applePay)}</div>
+        <div class="row">
+          <a class="btn" href="${escapeHtml(c.donate_url)}" target="_blank" rel="noopener">💚 ${donateLabel}</a>
+          ${c.website_url ? `<a class="btn" href="${escapeHtml(c.website_url)}" target="_blank" rel="noopener">Website</a>` : ''}
+        </div>
+      </div>
+    `;
+  }
+
+  async function loadCharities() {
+    const f = getFilters();
+    setFilterBadge(f);
+
+    let q = supabase
+      .from('charities')
+      .select('id,slug,name,website_url,donate_url,venmo_handle,apple_pay_supported,address1,address2,city,state,zip,cause_tags,lat,lng,vetted_status,is_ohio_based')
+      .eq('vetted_status', 'vetted')
+      .eq('is_ohio_based', true);
+
+    if (f.cause) q = q.contains('cause_tags', [f.cause]);
+    if (f.city) q = q.ilike('city', `%${f.city}%`);
+    if (f.wallet === 'applepay') q = q.eq('apple_pay_supported', true);
+
+    const { data, error } = await q.order('name', { ascending: true });
+    if (error) {
+      $list.innerHTML = `<div class="card">Error loading charities: ${escapeHtml(error.message)}</div>`;
+      return [];
+    }
+
+    let results = data || [];
+    const queryText = (f.q || $search.value || '').trim().toLowerCase();
+    if (queryText) {
+      results = results.filter(x =>
+        (x.name || '').toLowerCase().includes(queryText) ||
+        (x.city || '').toLowerCase().includes(queryText)
+      );
+    }
+
+    $list.innerHTML = results.length
+      ? results.map(charityCard).join('')
+      : `<div class="card">No vetted charities match these filters yet.</div>`;
+
+    return results;
+  }
+
+  // -------------------------
+  // Browser geocoding (Nominatim)
+  // -------------------------
+
+  // Cache geocode results locally so we don't repeatedly hit the API
+  const GEO_CACHE_KEY = 'geo_cache_v1';
+
+  function loadGeoCache() {
+    try { return JSON.parse(localStorage.getItem(GEO_CACHE_KEY) || '{}'); }
+    catch { return {}; }
+  }
+  function saveGeoCache(cache) {
+    try { localStorage.setItem(GEO_CACHE_KEY, JSON.stringify(cache)); } catch {}
+  }
+
+  function addrKey(c) {
+    return [c.address1, c.address2, c.city, c.state, c.zip]
+      .filter(Boolean)
+      .join('|')
+      .toLowerCase();
+  }
+
+  function buildAddressQuery(c) {
+    return [c.address1, c.address2, c.city, c.state || 'OH', c.zip]
+      .filter(Boolean)
+      .join(', ');
+  }
+
+  // Throttle: 1 request per second to be polite and avoid rate limits
+  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+  async function geocodeNominatim(address) {
+    const q = encodeURIComponent(address);
+    const url = `https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${q}`;
+
+    const res = await fetch(url, {
+      headers: {
+        "Accept": "application/json"
+        // Nominatim prefers a descriptive User-Agent header.
+        // Browsers restrict setting User-Agent; that's ok for MVP.
+      }
+    });
+
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (!data?.length) return null;
+
+    return { lat: Number(data[0].lat), lng: Number(data[0].lon) };
+  }
+
+  // -------------------------
+  // Map toggle and plotting
+  // -------------------------
+  let map, markersLayer, L;
+
+  async function ensureMap() {
+    if (map) return;
+
+    L = await import('https://unpkg.com/leaflet@1.9.4/dist/leaflet-src.esm.js');
+    map = L.map('map');
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 18,
+      attribution: '&copy; OpenStreetMap'
+    }).addTo(map);
+    markersLayer = L.layerGroup().addTo(map);
+    map.setView([39.9612, -82.9988], 7);
+  }
+
+  function addMarker(c, lat, lng) {
+    L.marker([lat, lng])
+      .addTo(markersLayer)
+      .bindPopup(`<b>${escapeHtml(c.name)}</b><br>${escapeHtml(c.city || '')}`);
+  }
+
+  async function plotCharitiesOnMap(charities) {
+    await ensureMap();
+    markersLayer.clearLayers();
+
+    const geoCache = loadGeoCache();
+    let plotted = 0;
+    let attempted = 0;
+
+    $mapStatus.textContent = 'Plotting charities…';
+
+    // First pass: plot any that already have lat/lng
+    for (const c of charities) {
+      if (c.lat && c.lng) {
+        addMarker(c, Number(c.lat), Number(c.lng));
+        plotted++;
+      }
+    }
+
+    // Second pass: geocode those missing coords but having an address
+    for (const c of charities) {
+      if (c.lat && c.lng) continue;
+
+      const address = buildAddressQuery(c);
+      if (!address || !c.address1) continue; // require at least address1 to geocode
+
+      attempted++;
+      const key = addrKey(c);
+
+      // cached?
+      if (geoCache[key]) {
+        addMarker(c, geoCache[key].lat, geoCache[key].lng);
+        plotted++;
+        continue;
+      }
+
+      // throttle
+      await sleep(1000);
+
+      const geo = await geocodeNominatim(address);
+      if (geo) {
+        geoCache[key] = geo;
+        saveGeoCache(geoCache);
+        addMarker(c, geo.lat, geo.lng);
+        plotted++;
+      }
+    }
+
+    // Fit bounds if we have any markers
+    const allMarkers = [];
+    markersLayer.eachLayer(layer => {
+      if (layer.getLatLng) allMarkers.push(layer.getLatLng());
+    });
+
+    if (allMarkers.length) {
+      const bounds = L.latLngBounds(allMarkers);
+      map.fitBounds(bounds, { padding: [20, 20] });
+      $mapStatus.textContent = `Map ready: plotted ${plotted} location(s).`;
+    } else {
+      $mapStatus.textContent = `No locations available yet. Add addresses (address1/city/zip) or lat/lng.`;
+    }
+  }
+
+  // UI actions
+  document.getElementById('applyBtn').addEventListener('click', () => {
+    const v = $search.value.trim();
+    if (v) params.set('q', v); else params.delete('q');
+    window.location.search = params.toString();
+  });
+
+  $toggleMapBtn.addEventListener('click', async () => {
+    const isShown = $mapWrap.style.display === 'block';
+    if (isShown) {
+      $mapWrap.style.display = 'none';
+      $toggleMapBtn.textContent = 'Show on map';
+    } else {
+      const charities = await loadCharities();
+      $mapWrap.style.display = 'block';
+      $toggleMapBtn.textContent = 'Hide map';
+      await plotCharitiesOnMap(charities);
+    }
+  });
+
+  // Pre-fill search from URL
+  const initial = params.get('q');
+  if (initial) $search.value = initial;
+
+  // Initial list load (mobile-friendly default)
+  loadCharities();
+</script>
+</body>
+</html>
