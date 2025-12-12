@@ -32,8 +32,7 @@
 <body>
   <h1>Ohio Charity Directory</h1>
   <div class="muted" id="subtitle">
-    Showing vetted charities. QR filters: <span class="chip">?cause=animals</span> <span class="chip">?city=columbus</span> <span class="chip">?wallet=applepay</span>
-  </div>
+    Showing vetted charities.</div>
 
   <!-- Search + primary actions -->
   <div class="bar">
@@ -79,8 +78,6 @@
   const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZxbHFxZ2pibG5rc2ZsdXpobnBmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTQ4NTQzMjEsImV4cCI6MjA3MDQzMDMyMX0.EKBrkuxyNWGWmSL8f9nVFKrjR5XNMrYyfwJmaGrM8IE';
 
   const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-
-  const params = new URLSearchParams(window.location.search);
   const $list = document.getElementById('list');
   const $filters = document.getElementById('activeFilters');
   const $search = document.getElementById('search');
@@ -99,51 +96,7 @@
   }
 
   function normalizeCity(s='') { return String(s).trim(); }
-
-  // ---------- Filters (URL defaults + UI overrides) ----------
-  function getFiltersFromUrl() {
-    return {
-      cause: params.get('cause')?.toLowerCase() || '',
-      city: params.get('city') || '',
-      wallet: params.get('wallet')?.toLowerCase() || '',
-      q: params.get('q') || ''
-    };
-  }
-
-  function getFiltersFromUI() {
-    const cause = document.getElementById('causeSelect').value || '';
-    const city = document.getElementById('citySelect').value || '';
-    const wallet = document.getElementById('applePayOnly').checked ? 'applepay' : '';
-    const q = document.getElementById('search').value.trim() || '';
-    return { cause, city, wallet, q };
-  }
-
-  function applyFiltersToUrl(f) {
-    if (f.cause) params.set('cause', f.cause); else params.delete('cause');
-    if (f.city) params.set('city', f.city); else params.delete('city');
-    if (f.wallet) params.set('wallet', f.wallet); else params.delete('wallet');
-    if (f.q) params.set('q', f.q); else params.delete('q');
-
-    const newUrl = `${window.location.pathname}${params.toString() ? '?' + params.toString() : ''}`;
-    window.history.replaceState({}, '', newUrl);
-  }
-
-  function setFilterBadge(f) {
-    const bits = [];
-    if (f.cause) bits.push(`cause=${f.cause}`);
-    if (f.city) bits.push(`city=${f.city}`);
-    if (f.wallet) bits.push(`wallet=${f.wallet}`);
-    if (f.q) bits.push(`q=${f.q}`);
-    $filters.textContent = bits.length ? `Filters: ${bits.join(' • ')}` : 'No filters';
-  }
-
-  function initFilterUIFromUrl() {
-    const f = getFiltersFromUrl();
-    document.getElementById('search').value = f.q || '';
-    if (f.cause) document.getElementById('causeSelect').value = f.cause;
-    document.getElementById('applePayOnly').checked = (f.wallet === 'applepay');
-    // city will be set after city dropdown is populated
-  }
+  // ---------- Filters (UI only) ----------
 
   // ---------- Rendering ----------
   function charityCard(c) {
@@ -200,7 +153,7 @@
     }
 
     // apply URL default city after options exist
-    const f = getFiltersFromUrl();
+    const f = getFiltersFromUI();
     if (f.city) {
       // allow either "columbus" or "Columbus"
       const match = cities.find(c => c.toLowerCase() === f.city.toLowerCase());
@@ -211,8 +164,7 @@
 
   async function loadCharities() {
     const f = getFiltersFromUI();
-    applyFiltersToUrl(f);
-    setFilterBadge(f);
+        setFilterBadge(f);
 
     // Helpful debug if something goes wrong
     $debug.style.display = 'none';
@@ -400,8 +352,7 @@
   });
 
   // ---------- Boot ----------
-  initFilterUIFromUrl();
-  await loadCitiesForDropdown();
+    await loadCitiesForDropdown();
   await loadCharities();
 </script>
 </body>
